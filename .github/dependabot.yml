@@ -1,0 +1,24 @@
+# Dependabot config for ignitemarketing/webfortrades.com
+#
+# The production dependency tree is just astro + @astrojs/sitemap, so a weekly
+# grouped npm update is enough to keep pnpm-lock.yaml from drifting (see
+# issue #9: the tree carried 20 advisories because the lockfile stopped
+# moving between manual upgrades).
+#
+# Actions in .github/workflows/ are pinned to commit SHAs and are not covered
+# here; enabling the github-actions ecosystem would raise a separate PR stream.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
