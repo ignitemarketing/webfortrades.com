@@ -8,8 +8,8 @@ concurrency:
   group: ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  build:
-    name: build
+  validate:
+    name: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
