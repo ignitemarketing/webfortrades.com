@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import { Font } from 'astro:assets';
 import { content } from '../content';
 
 interface Props { path?: string; }
@@ -44,9 +45,8 @@ const jsonld = {
     <meta name="twitter:description" content={c.description} />
     <meta name="twitter:image" content={ogImage} />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <style is:inline>:root{--font-display:'Space Grotesk',sans-serif;--font-body:'Inter',system-ui,sans-serif;}</style>
+    <Font cssVariable="--font-display" preload />
+    <Font cssVariable="--font-body" preload={[{ weight: 400 }]} />
     <script type="application/ld+json" set:html={JSON.stringify(jsonld)} />
   </head>
   <body>
