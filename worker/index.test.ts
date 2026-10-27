@@ -1,30 +1,26 @@
-// Run with: pnpm test  (node --test, Node's built-in TypeScript type stripping)
-import { test, beforeEach, afterEach } from 'node:test';
+// Run with: pnpm test  (node --test, Node's built-in TypeScript type stripping;
+// worker/cloudflare-email-shim.mjs stands in for `cloudflare:email`)
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { type Env } from './index.ts';
 
-const realFetch = globalThis.fetch;
-let postmarkCalls: { url: string; body: any }[] = [];
-let postmarkStatus = 200;
+type Sent = { from: string; to: string; raw: string };
+let sent: Sent[] = [];
+let sendError: Error | null = null;
 
 beforeEach(() => {
-  postmarkCalls = [];
-  postmarkStatus = 200;
-  globalThis.fetch = (async (url: string, init: RequestInit) => {
-    postmarkCalls.push({ url, body: JSON.parse(String(init.body)) });
-    return new Response('{}', { status: postmarkStatus });
-  }) as typeof fetch;
-});
-afterEach(() => {
-  globalThis.fetch = realFetch;
+  sent = [];
+  sendError = null;
 });
 
-const env = (over: Partial<Env> = {}): Env => ({
+const env = (): Env => ({
   ASSETS: { fetch: async () => new Response('asset', { status: 200 }) },
-  POSTMARK_SERVER_TOKEN: 'test-token',
-  NOTIFY_TO: 'to@example.invalid',
-  NOTIFY_FROM: 'from@example.invalid',
-  ...over,
+  NOTIFY: {
+    send: async (message: any) => {
+      if (sendError) throw sendError;
+      sent.push(message);
+    },
+  },
 });
 
 const post = (body: unknown, headers: Record<string, string> = {}) =>
@@ -36,15 +32,36 @@ const post = (body: unknown, headers: Record<string, string> = {}) =>
 
 const valid = { email: 'Owner@Plumbing.example', fsm: 'Jobber', source: 'webfortrades.com', page: '/', company: '' };
 
-test('valid signup returns ok and sends one Postmark email', async () => {
+const headers = (raw: string) => raw.split('\r\n\r\n')[0].split('\r\n');
+const header = (raw: string, name: string) =>
+  headers(raw).find((h) => h.toLowerCase().startsWith(name.toLowerCase() + ':'))?.slice(name.length + 1).trim();
+const subject = (raw: string) => {
+  const v = header(raw, 'Subject')!;
+  const m = v.match(/^=\?UTF-8\?B\?(.*)\?=$/);
+  return m ? Buffer.from(m[1], 'base64').toString('utf8') : v;
+};
+const bodyText = (raw: string) => Buffer.from(raw.split('\r\n\r\n')[1].replace(/\r\n/g, ''), 'base64').toString('utf8');
+
+test('valid signup returns ok and sends one email through the binding', async () => {
   const res = await worker.fetch(post(valid), env());
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
-  assert.equal(postmarkCalls.length, 1);
-  assert.equal(postmarkCalls[0].url, 'https://api.postmarkapp.com/email');
-  assert.equal(postmarkCalls[0].body.To, 'to@example.invalid');
-  assert.equal(postmarkCalls[0].body.From, 'from@example.invalid');
-  assert.equal(postmarkCalls[0].body.ReplyTo, 'owner@plumbing.example');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].from, 'waitlist@webfortrades.com');
+  assert.equal(sent[0].to, 'colin+fieldservice@colingreig.com');
+  const raw = sent[0].raw;
+  assert.equal(header(raw, 'To'), 'colin+fieldservice@colingreig.com');
+  assert.equal(header(raw, 'From'), 'webfortrades waitlist <waitlist@webfortrades.com>');
+  assert.equal(header(raw, 'Reply-To'), 'owner@plumbing.example');
+  assert.match(header(raw, 'Message-ID')!, /^<[0-9a-f-]{36}@webfortrades\.com>$/);
+  assert.equal(subject(raw), '[newco] Waitlist: webfortrades.com — owner@plumbing.example');
+  assert.match(bodyText(raw), /Email:    owner@plumbing\.example\nFSM:      Jobber/);
+});
+
+test('wrangler.jsonc binding destination matches the Worker recipient', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const cfg = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+  assert.match(cfg, /"name": "NOTIFY", "destination_address": "colin\+fieldservice@colingreig\.com"/);
 });
 
 test('form-encoded posts are accepted', async () => {
@@ -54,26 +71,26 @@ test('form-encoded posts are accepted', async () => {
   });
   const res = await worker.fetch(req, env());
   assert.deepEqual(await res.json(), { ok: true });
-  assert.equal(postmarkCalls.length, 1);
+  assert.equal(sent.length, 1);
 });
 
 test('invalid email returns the error the client expects', async () => {
   const res = await worker.fetch(post({ ...valid, email: 'not-an-email' }), env());
   assert.equal(res.status, 422);
   assert.deepEqual(await res.json(), { ok: false, error: 'invalid_email' });
-  assert.equal(postmarkCalls.length, 0);
+  assert.equal(sent.length, 0);
 });
 
 test('unknown fsm is rejected', async () => {
   const res = await worker.fetch(post({ ...valid, fsm: 'Hacked' }), env());
   assert.equal(res.status, 422);
-  assert.equal(postmarkCalls.length, 0);
+  assert.equal(sent.length, 0);
 });
 
 test('filled honeypot reports ok and sends nothing', async () => {
   const res = await worker.fetch(post({ ...valid, company: 'Spam LLC' }), env());
   assert.deepEqual(await res.json(), { ok: true });
-  assert.equal(postmarkCalls.length, 0);
+  assert.equal(sent.length, 0);
 });
 
 test('cross-site Origin is refused; missing Origin is allowed', async () => {
@@ -86,29 +103,30 @@ test('cross-site Origin is refused; missing Origin is allowed', async () => {
   });
   const ok = await worker.fetch(req, env());
   assert.equal(ok.status, 200);
-  assert.equal(postmarkCalls.length, 1);
+  assert.equal(sent.length, 1);
 });
 
-test('malformed JSON and non-object JSON are bad requests', async () => {
+test('oversized and malformed bodies are bad requests', async () => {
+  assert.equal((await worker.fetch(post(valid, { 'content-length': '5000' }), env())).status, 413);
   assert.equal((await worker.fetch(post('{nope'), env())).status, 400);
   assert.equal((await worker.fetch(post('[1,2]'), env())).status, 400);
-  assert.equal(postmarkCalls.length, 0);
+  assert.equal(sent.length, 0);
 });
 
-test('missing secrets or a Postmark failure return server_error', async () => {
-  const noSecret = await worker.fetch(post(valid), env({ NOTIFY_TO: undefined }));
-  assert.equal(noSecret.status, 500);
-  assert.equal(postmarkCalls.length, 0);
-  postmarkStatus = 422;
+test('a send_email failure returns server_error', async () => {
+  sendError = new Error('E_RECIPIENT_NOT_ALLOWED');
   const failed = await worker.fetch(post(valid), env());
   assert.equal(failed.status, 500);
   assert.deepEqual(await failed.json(), { ok: false, error: 'server_error' });
 });
 
-test('source is capped at 100 characters in the subject', async () => {
+test('source is capped at 100 characters and cannot inject headers', async () => {
   await worker.fetch(post({ ...valid, source: 'x'.repeat(500) }), env());
-  assert.ok(postmarkCalls[0].body.Subject.includes('x'.repeat(100)));
-  assert.ok(!postmarkCalls[0].body.Subject.includes('x'.repeat(101)));
+  assert.ok(subject(sent[0].raw).includes('x'.repeat(100)));
+  assert.ok(!subject(sent[0].raw).includes('x'.repeat(101)));
+  await worker.fetch(post({ ...valid, source: 'evil\r\nBcc: victim@example.com' }), env());
+  assert.ok(!headers(sent[1].raw).some((h) => h.toLowerCase().startsWith('bcc:')));
+  assert.equal(subject(sent[1].raw), '[newco] Waitlist: evil  Bcc: victim@example.com — owner@plumbing.example');
 });
 
 test('GET /api/waitlist is 405; other paths go to static assets', async () => {

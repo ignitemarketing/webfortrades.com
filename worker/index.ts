@@ -1,18 +1,21 @@
 // POST /api/waitlist for the waitlist form (src/components/Waitlist.astro).
 // Everything else is a static asset from the Astro build output.
 //
-// Worker secrets (set once, never committed):
-//   wrangler secret put POSTMARK_SERVER_TOKEN
-//   wrangler secret put NOTIFY_TO      inbox that receives each signup
-//   wrangler secret put NOTIFY_FROM    verified Postmark sender
+// Each signup is emailed through the NOTIFY send_email binding in
+// wrangler.jsonc (Cloudflare Email Routing), which only delivers to its
+// destination_address. No secrets: the sender is NOTIFY_FROM below.
+// https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/
+import { EmailMessage } from 'cloudflare:email';
+
 export interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
-  POSTMARK_SERVER_TOKEN?: string;
-  NOTIFY_TO?: string;
-  NOTIFY_FROM?: string;
+  NOTIFY: { send(message: EmailMessage): Promise<unknown> };
 }
 
 const SITE_ORIGIN = 'https://webfortrades.com';
+const NOTIFY_FROM = 'waitlist@webfortrades.com';
+// Must match send_email[].destination_address in wrangler.jsonc.
+const NOTIFY_TO = 'colin+fieldservice@colingreig.com';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ALLOWED_FSM = ['Jobber', 'ServiceTitan', 'Housecall Pro', 'Other', ''];
 const MAX_BODY_BYTES = 4096;
@@ -23,7 +26,35 @@ const json = (body: unknown, status = 200) =>
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
 
-const field = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
+// Control characters (CR/LF included) become spaces so user input can never
+// add a header line to the MIME message.
+const field = (v: unknown, max: number) =>
+  String(v ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, max);
+
+const base64 = (s: string) => {
+  let bin = '';
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin);
+};
+
+// RFC 2047 encoded-word for any header value that is not plain ASCII.
+const headerValue = (s: string) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${base64(s)}?=`);
+
+export function buildMime(subject: string, replyTo: string, text: string): string {
+  return [
+    `From: webfortrades waitlist <${NOTIFY_FROM}>`,
+    `To: ${NOTIFY_TO}`,
+    `Reply-To: ${replyTo}`,
+    `Subject: ${headerValue(subject)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${crypto.randomUUID()}@webfortrades.com>`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    base64(text).replace(/.{76}/g, '$&\r\n'),
+  ].join('\r\n');
+}
 
 async function handleWaitlist(request: Request, env: Env): Promise<Response> {
   // Browsers send Origin on POST; refuse cross-site posts. Requests with no
@@ -67,11 +98,6 @@ async function handleWaitlist(request: Request, env: Env): Promise<Response> {
     return json({ ok: false, error: 'invalid_fsm' }, 422);
   }
 
-  if (!env.POSTMARK_SERVER_TOKEN || !env.NOTIFY_TO || !env.NOTIFY_FROM) {
-    console.error('waitlist: POSTMARK_SERVER_TOKEN, NOTIFY_TO or NOTIFY_FROM is not set');
-    return json({ ok: false, error: 'server_error' }, 500);
-  }
-
   const textBody = [
     'New waitlist signup',
     '',
@@ -85,28 +111,10 @@ async function handleWaitlist(request: Request, env: Env): Promise<Response> {
   ].join('\n');
 
   try {
-    const res = await fetch('https://api.postmarkapp.com/email', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Postmark-Server-Token': env.POSTMARK_SERVER_TOKEN,
-      },
-      body: JSON.stringify({
-        From: env.NOTIFY_FROM,
-        To: env.NOTIFY_TO,
-        ReplyTo: email,
-        Subject: `[newco] Waitlist: ${source} — ${email}`,
-        TextBody: textBody,
-        MessageStream: 'outbound',
-      }),
-    });
-    if (!res.ok) {
-      console.error(`waitlist: Postmark returned ${res.status}`);
-      return json({ ok: false, error: 'server_error' }, 500);
-    }
+    const raw = buildMime(`[newco] Waitlist: ${source} — ${email}`, email, textBody);
+    await env.NOTIFY.send(new EmailMessage(NOTIFY_FROM, NOTIFY_TO, raw));
   } catch (err) {
-    console.error('waitlist: Postmark request failed', err);
+    console.error('waitlist: send_email failed', err);
     return json({ ok: false, error: 'server_error' }, 500);
   }
 

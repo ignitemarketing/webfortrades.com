@@ -8,7 +8,10 @@
     "binding": "ASSETS",
     "run_worker_first": ["/api/*"],
     "not_found_handling": "404-page"
-  }
-  // Worker secrets (set once, never committed): POSTMARK_SERVER_TOKEN,
-  // NOTIFY_TO, NOTIFY_FROM. See worker/index.ts.
+  },
+  // Waitlist signups (worker/index.ts). Cloudflare Email Routing only delivers
+  // to this verified destination; the sender is waitlist@webfortrades.com.
+  "send_email": [
+    { "name": "NOTIFY", "destination_address": "colin+fieldservice@colingreig.com" }
+  ]
 }

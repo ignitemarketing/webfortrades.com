@@ -7,7 +7,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "test": "node --test worker/"
+    "test": "node --import ./worker/cloudflare-email-shim.mjs --test worker/"
   },
   "dependencies": {
     "@astrojs/sitemap": "^3.7.4",
