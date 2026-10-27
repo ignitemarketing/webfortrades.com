@@ -1,9 +1,17 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "webfortrades",
+  "main": "./worker/index.ts",
   "compatibility_date": "2026-07-01",
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
     "not_found_handling": "404-page"
-  }
+  },
+  // Waitlist signups (worker/index.ts). Cloudflare Email Routing only delivers
+  // to this verified destination; the sender is waitlist@webfortrades.com.
+  "send_email": [
+    { "name": "NOTIFY", "destination_address": "colin+fieldservice@colingreig.com" }
+  ]
 }
