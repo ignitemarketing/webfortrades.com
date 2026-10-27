@@ -4,7 +4,17 @@
 # Docs: https://developers.cloudflare.com/workers/static-assets/headers/
 #
 # HTML pages keep the default (must-revalidate) so a deploy is visible
-# immediately — no rule below targets `/` or `/*`.
+# immediately — no Cache-Control rule below targets `/` or `/*`.
+
+# Security headers on every response. The page CSP (script/style hashes)
+# is emitted by Astro as a <meta> tag (security.csp in astro.config.mjs);
+# frame-ancestors only works as a header, so it is sent here.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 # Hashed build output: the filename changes with the content, so it can be
 # cached for a year and never revalidated.
