@@ -14,10 +14,15 @@ export default defineConfig({
         "img-src 'self' data:",
         "font-src 'self' https://fonts.gstatic.com",
         "connect-src 'self'",
+        // Cloudflare Turnstile on the waitlist form: api.js plus its iframe.
+        "frame-src https://challenges.cloudflare.com",
         "base-uri 'self'",
         "form-action 'self'",
         "object-src 'none'",
       ],
+      scriptDirective: {
+        resources: ["'self'", 'https://challenges.cloudflare.com'],
+      },
       styleDirective: {
         resources: [
           "'self'",
